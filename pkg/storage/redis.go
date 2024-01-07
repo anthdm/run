@@ -92,12 +92,7 @@ func (s *RedisStore) UpdateEndpoint(id uuid.UUID, params UpdateEndpointParams) e
 	if params.DeployHistory != nil {
 		endpoint.DeployHistory = append(endpoint.DeployHistory, params.DeployHistory)
 	}
-	b, err := msgpack.Marshal(endpoint)
-	if err != nil {
-		return err
-	}
-	key := makeKey("endpoint", endpoint.ID)
-	return s.client.Set(context.Background(), key, b, 0).Err()
+	return s.CreateEndpoint(endpoint)
 }
 
 func (s *RedisStore) GetDeploy(id uuid.UUID) (*types.Deploy, error) {
