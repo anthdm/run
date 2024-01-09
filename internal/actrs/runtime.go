@@ -31,14 +31,14 @@ type shutdown struct{}
 
 // Runtime is an actor that can execute compiled WASM blobs in a distributed cluster.
 type Runtime struct {
-	store        storage.Store
-	cache        storage.ModCacher
-	started      time.Time
-	deploymentID uuid.UUID
-	managerPID   *actor.PID
-	runtime      *runtime.Runtime
-	repeat       actor.SendRepeater
-	stdout       *bytes.Buffer
+	store      storage.Store
+	cache      storage.ModCacher
+	started    time.Time
+	deployment *types.Deployment
+	managerPID *actor.PID
+	runtime    *runtime.Runtime
+	repeat     actor.SendRepeater
+	stdout     *bytes.Buffer
 }
 
 func NewRuntime(store storage.Store, cache storage.ModCacher) actor.Producer {
@@ -60,7 +60,7 @@ func (r *Runtime) Receive(c *actor.Context) {
 	case actor.Stopped:
 		// TODO: send metrics about the runtime to the metric actor.
 		_ = time.Since(r.started)
-		c.Send(r.managerPID, removeRuntime{key: r.deploymentID.String()})
+		c.Send(r.managerPID, removeRuntime{key: r.deployment.ID.String()})
 		r.runtime.Close()
 		// Releasing this mod will invalidate the cache for some reason.
 		// r.mod.Close(context.TODO())
@@ -78,17 +78,18 @@ func (r *Runtime) Receive(c *actor.Context) {
 }
 
 func (r *Runtime) initialize(msg *proto.HTTPRequest) error {
-	r.deploymentID = uuid.MustParse(msg.DeploymentID)
+	id := uuid.MustParse(msg.DeploymentID)
 	// TODO: this could be coming from a Redis cache instead of Postres.
 	// Maybe only the blob. Not sure...
-	deploy, err := r.store.GetDeployment(r.deploymentID)
+	deploy, err := r.store.GetDeployment(id)
 	if err != nil {
-		return fmt.Errorf("runtime: could not find deployment (%s)", r.deploymentID)
+		return fmt.Errorf("runtime: could not find deployment (%s)", id)
 	}
+	r.deployment = deploy
 
-	modCache, ok := r.cache.Get(r.deploymentID)
+	modCache, ok := r.cache.Get(r.deployment.ID)
 	if !ok {
-		slog.Warn("no cache hit", "endpoint", r.deploymentID)
+		slog.Warn("no cache hit", "endpoint", r.deployment.ID)
 		modCache = wazero.NewCompilationCache()
 	}
 
@@ -120,7 +121,8 @@ func (r *Runtime) handleHTTPRequest(ctx *actor.Context, msg *proto.HTTPRequest) 
 
 	var args []string = nil
 	if msg.Runtime == "js" {
-		args = []string{"", "-e", string(r.runtime.Blob())}
+
+		args = []string{"", "-e", string(r.deployment.Blob)}
 	}
 
 	req := bytes.NewReader(b)
@@ -149,7 +151,7 @@ func (r *Runtime) handleHTTPRequest(ctx *actor.Context, msg *proto.HTTPRequest) 
 		metric := types.RequestMetric{
 			ID:           uuid.New(),
 			Duration:     time.Since(start),
-			DeploymentID: r.deploymentID,
+			DeploymentID: r.deployment.ID,
 			// EndpointID:   deploy.EndpointID,
 			RequestURL: msg.URL,
 			StatusCode: status,
